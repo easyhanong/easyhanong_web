@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Header } from "../components/Header";
+import Header from "../components/Header";
+import Footer from "../components/Footer";
 import { HeroSection } from "../components/HeroSection";
 import { SdgsBanner } from "../components/SdgsBanner";
 import { CropsSection } from "../components/CropsSection";
@@ -13,7 +14,7 @@ import {
 import { ChatSidebar } from "../components/ChatSidebar";
 
 export default function Home() {
-  const [attendanceOpen, setAttendanceOpen] = useState(true);
+  const [attendanceOpen, setAttendanceOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
 
   useEffect(() => {
@@ -35,6 +36,7 @@ export default function Home() {
         <FeaturesSection />
         <PointsSection onAttendanceClick={() => setAttendanceOpen(true)} />
         <AiChatSection />
+        <Footer />
       </div>
 
       <ChatSidebar open={chatOpen} onClose={() => setChatOpen(false)} />
