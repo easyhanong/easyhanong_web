@@ -6,8 +6,8 @@ import Signup from "./pages/Signup";
 
 export default function App() {
   return (
-    <div className="flex flex-col min-h-screen">
-      <main>
+    <div className="flex flex-col min-h-screen w-full">
+      <main className="w-full">
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/login" element={<Login />} />
