@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   canAffordChat,
   CHAT_QUESTION_COST,
@@ -42,24 +42,28 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({ open, onClose }) => {
   const [coinError, setCoinError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const refreshCoins = () => setCoins(getCoins());
+  const refreshCoins = useCallback(() => setCoins(getCoins()), []);
 
   useEffect(() => {
-    refreshCoins();
     window.addEventListener(COINS_UPDATED_EVENT, refreshCoins);
     return () => window.removeEventListener(COINS_UPDATED_EVENT, refreshCoins);
-  }, []);
+  }, [refreshCoins]);
 
   useEffect(() => {
     if (!open) return;
-    refreshCoins();
-    setCoinError(null);
+    const timeout = window.setTimeout(() => {
+      refreshCoins();
+      setCoinError(null);
+    }, 0);
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, onClose]);
+    return () => {
+      window.clearTimeout(timeout);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open, onClose, refreshCoins]);
 
   useEffect(() => {
     if (open) {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
 import { HeroSection } from "../components/HeroSection";
@@ -7,21 +7,13 @@ import { CropsSection } from "../components/CropsSection";
 import { FeaturesSection } from "../components/FeaturesSection";
 import { PointsSection } from "../components/PointsSection";
 import { AiChatSection } from "../components/AiChatSection";
-import {
-  AttendanceCheckModal,
-  shouldAutoOpenAttendance,
-} from "../components/AttendanceCheckModal";
+import { AttendanceCheckModal } from "../components/AttendanceCheckModal";
 import { ChatSidebar } from "../components/ChatSidebar";
+import { shouldAutoOpenAttendance } from "../lib/attendance";
 
 export default function Home() {
-  const [attendanceOpen, setAttendanceOpen] = useState(false);
+  const [attendanceOpen, setAttendanceOpen] = useState(shouldAutoOpenAttendance);
   const [chatOpen, setChatOpen] = useState(false);
-
-  useEffect(() => {
-    if (shouldAutoOpenAttendance()) {
-      setAttendanceOpen(true);
-    }
-  }, []);
 
   return (
     <>
