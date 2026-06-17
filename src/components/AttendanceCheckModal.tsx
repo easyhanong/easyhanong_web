@@ -5,56 +5,24 @@ import {
   getAttendanceReward,
   getCoins,
 } from "../lib/coins";
+import {
+  ATTENDANCE_TEST_MODE,
+  canCheckToday,
+  getDaysInWeek,
+  getToday,
+  getWeekForDay,
+  loadAttendanceState,
+  saveAttendanceState,
+  TOTAL_ATTENDANCE_DAYS,
+  type AttendanceState,
+} from "../lib/attendance";
 
 const dayCoinImage = "/day-coin.png";
 
-const DAYS_PER_WEEK = 7;
 const TOTAL_WEEKS = 5;
-const TOTAL_DAYS = DAYS_PER_WEEK * TOTAL_WEEKS;
-const STORAGE_KEY = "easyhanong-attendance";
-
-/** 테스트용: 하루 1회 제한 해제, 새로고침 시 팝업 자동 오픈 */
-const ATTENDANCE_TEST_MODE = true;
+const TOTAL_DAYS = TOTAL_ATTENDANCE_DAYS;
 
 const WEEKDAY_LABELS = ["월", "화", "수", "목", "금", "토", "일"];
-
-type AttendanceState = {
-  currentDay: number;
-  lastCheckDate: string | null;
-};
-
-function getToday(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function getWeekForDay(day: number): number {
-  return Math.min(Math.ceil(day / DAYS_PER_WEEK), TOTAL_WEEKS);
-}
-
-function getDaysInWeek(week: number): number[] {
-  const start = (week - 1) * DAYS_PER_WEEK + 1;
-  return Array.from({ length: DAYS_PER_WEEK }, (_, i) => start + i);
-}
-
-function loadState(): AttendanceState {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as AttendanceState;
-      return {
-        currentDay: Math.min(Math.max(parsed.currentDay ?? 1, 1), TOTAL_DAYS),
-        lastCheckDate: parsed.lastCheckDate ?? null,
-      };
-    }
-  } catch {
-    /* ignore */
-  }
-  return { currentDay: 1, lastCheckDate: null };
-}
-
-function saveState(state: AttendanceState) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
 
 function isDayCompleted(
   day: number,
@@ -67,11 +35,6 @@ function isDayCompleted(
   return false;
 }
 
-function canCheckToday(lastCheckDate: string | null): boolean {
-  if (ATTENDANCE_TEST_MODE) return true;
-  return lastCheckDate !== getToday();
-}
-
 type AttendanceCheckModalProps = {
   open: boolean;
   onClose: () => void;
@@ -81,7 +44,7 @@ export const AttendanceCheckModal: React.FC<AttendanceCheckModalProps> = ({
   open,
   onClose,
 }) => {
-  const [state, setState] = useState<AttendanceState>(loadState);
+  const [state, setState] = useState<AttendanceState>(loadAttendanceState);
   const [viewWeek, setViewWeek] = useState(1);
   const [coinBalance, setCoinBalance] = useState(getCoins);
 
@@ -92,14 +55,16 @@ export const AttendanceCheckModal: React.FC<AttendanceCheckModalProps> = ({
   }, []);
 
   useEffect(() => {
-    if (open) {
-      const loaded = loadState();
+    if (!open) return;
+    const timeout = window.setTimeout(() => {
+      const loaded = loadAttendanceState();
       setState(loaded);
       const active = canCheckToday(loaded.lastCheckDate)
         ? loaded.currentDay
         : Math.max(loaded.currentDay - 1, 1);
       setViewWeek(getWeekForDay(active));
-    }
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, [open]);
 
   useEffect(() => {
@@ -132,7 +97,7 @@ export const AttendanceCheckModal: React.FC<AttendanceCheckModalProps> = ({
     setCoinBalance(getCoins());
 
     setState(next);
-    saveState(next);
+    saveAttendanceState(next);
     if (ATTENDANCE_TEST_MODE) {
       setViewWeek(getWeekForDay(next.currentDay));
     }
@@ -282,8 +247,3 @@ export const AttendanceCheckModal: React.FC<AttendanceCheckModalProps> = ({
     </div>
   );
 };
-
-export function shouldAutoOpenAttendance(): boolean {
-  if (ATTENDANCE_TEST_MODE) return true;
-  return canCheckToday(loadState().lastCheckDate);
-}
