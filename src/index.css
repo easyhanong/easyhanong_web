@@ -1,27 +1,25 @@
 @import "tailwindcss";
 
 @theme {
-  --color-main: #006c4d;
-  --color-sub1: #034d38;
+  --font-sans: "Pretendard", "Noto Sans KR", sans-serif;
+  --font-display: "Black Han Sans", sans-serif;
+  --color-main: #006C4D;
+  --color-sub1: #034D38;
   --color-sub2: #008862;
 
   --color-gray1: #babaa9;
   --color-gray2: #8a8a7d;
   --color-gray3: #616158;
 
-  --color-green1: #f4f9f2;
-  --color-green2: #abe6c5;
-  --color-green3: #51c99a;
-  --color-green4: #00ba84;
-  --color-green5: #006c4d;
-  --color-green6: #011d15;
+  --color-green1: #F4F9F2;
+  --color-green2: #ABE6C5;
+  --color-green3: #51C99A;
+  --color-green4: #00BA84;
+  --color-green5: #006C4D;
+  --color-green6: #011D15;
 }
 
-@keyframes slideIn {
-  from {
-    transform: translateX(100%);
-  }
-  to {
-    transform: translateX(0);
-  }
+* {
+  font-family: "Pretendard", "Noto Sans KR", sans-serif;
+  letter-spacing: -0.01em;
 }
