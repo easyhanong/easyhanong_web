@@ -1,6 +1,7 @@
 import { useState } from "react";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
+import { apiBase } from "../lib/api";
 
 export default function Signup() {
   const [username, setUsername] = useState('');
@@ -13,11 +14,9 @@ export default function Signup() {
     e.preventDefault();
     setError('');
     setLoading(true);
-
-    const API_BASE = (import.meta as any).env.VITE_API_BASE_URL || '';
-
+    
     try {
-      const response = await fetch(`${API_BASE.replace(/\/$/, '')}/auth/signup`, {
+      const response = await fetch(`${apiBase()}/auth/signup`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

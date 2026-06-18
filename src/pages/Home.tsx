@@ -432,7 +432,10 @@ export default function Home() {
         </div>
       </section>
 
-      <Footer />
-    </div>
+      <AttendanceCheckModal
+        open={attendanceOpen}
+        onClose={() => setAttendanceOpen(false)}
+      />
+    </>
   );
 }
