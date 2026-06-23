@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import type { IconType } from "react-icons";
 import {
   FaLeaf, FaSeedling, FaStar, FaTint,
+  FaCalendarAlt, FaCheckCircle, FaForward,
 } from "react-icons/fa";
 import { GiTomato, GiStrawberry, GiCabbage, GiChiliPepper, GiAcorn } from "react-icons/gi";
 import { TbPlant } from "react-icons/tb";
 import gsap from "gsap";
 import Header from "../components/Header";
+import { ChatSidebar } from "../components/ChatSidebar";
 import { apiFetch } from "../lib/api";
 
 type ApiCrop = {
@@ -18,25 +20,22 @@ type ApiCrop = {
   summary: string;
 };
 
-type CropDetail = {
-  id: number;
-  slug: string;
+type DaySchedule = {
   name: string;
-  difficulty: number;
-  days_to_harvest: number;
-  summary: string;
-  sunlight: string;
-  water_cycle: string;
+  start_day: number;
+  end_day: number;
+  water_per_day: number;
+  tasks: string[];
+  tip: string;
 };
 
 type GrowData = {
   cropId: number;
   cropSlug: string;
   cropName: string;
-  cropEmoji: string;
-  waterCount: number;
-  growStage: number;
-  lastWatered: string | null;
+  cropTotalDays: number;
+  plantedAt: string;       // YYYY-MM-DD
+  wateredDates: string[];  // YYYY-MM-DD 배열 (중복 허용 — 하루 N번)
 };
 
 const CROP_ICON_MAP: Record<string, IconType> = {
@@ -51,27 +50,38 @@ const CROP_ICON_MAP: Record<string, IconType> = {
 
 const DIFFICULTY_MAP: Record<number, string> = { 1: "쉬움", 2: "보통", 3: "어려움" };
 
-type Stage = { label: string; Icon: IconType; scale: number };
-
-const STAGES: Stage[] = [
-  { label: "씨앗",       Icon: GiAcorn,    scale: 0.6  },
-  { label: "새싹",       Icon: FaSeedling, scale: 0.85 },
-  { label: "성장중",     Icon: TbPlant,    scale: 1.1  },
-  { label: "무르익는중", Icon: FaLeaf,     scale: 1.3  },
-  { label: "수확 가능!", Icon: FaStar,     scale: 1.6  },
-];
-
-const STAGE_THRESHOLDS = [0, 2, 6, 12, 20];
-
-function getStage(waterCount: number) {
-  for (let i = STAGE_THRESHOLDS.length - 1; i >= 0; i--) {
-    if (waterCount >= STAGE_THRESHOLDS[i]) return i;
-  }
-  return 0;
-}
-
 function getCropIcon(slug: string): IconType {
   return CROP_ICON_MAP[slug] ?? FaLeaf;
+}
+
+function dateToStr(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function getTodayStr(): string {
+  return dateToStr(new Date());
+}
+
+function getCurrentDay(plantedAt: string): number {
+  const planted = new Date(plantedAt + "T00:00:00");
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.max(1, Math.floor((today.getTime() - planted.getTime()) / 86400000) + 1);
+}
+
+function getPlantIcon(pct: number, slug: string): IconType {
+  if (pct >= 80) return getCropIcon(slug);
+  if (pct >= 60) return FaLeaf;
+  if (pct >= 35) return TbPlant;
+  if (pct >= 15) return FaSeedling;
+  return GiAcorn;
+}
+
+function getPlantScale(pct: number): number {
+  return 0.6 + (pct / 100) * 1.0;
 }
 
 const STORAGE_KEY = "easyhanong_grow";
@@ -81,24 +91,24 @@ export default function Grow() {
   const [phase, setPhase] = useState<"select" | "grow">("select");
   const [crops, setCrops] = useState<ApiCrop[]>([]);
   const [growData, setGrowData] = useState<GrowData | null>(null);
-  const [cropDetail, setCropDetail] = useState<CropDetail | null>(null);
+  const [daySchedule, setDaySchedule] = useState<DaySchedule | null>(null);
   const [isWatering, setIsWatering] = useState(false);
-  const [levelUp, setLevelUp] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
 
   const plantRef = useRef<HTMLDivElement>(null);
   const dropsRef = useRef<HTMLDivElement>(null);
 
-  // localStorage 확인 후 initialized = true
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
-      setGrowData(JSON.parse(saved));
+      const parsed = JSON.parse(saved) as Partial<GrowData>;
+      // 구버전 로컬스토리지 데이터 호환 (wateredDates 없을 수 있음)
+      setGrowData({ wateredDates: [], ...parsed } as GrowData);
       setPhase("grow");
     }
     setInitialized(true);
   }, []);
 
-  // initialized 이후에만 작물 목록 fetch (불필요한 401 방지)
   useEffect(() => {
     if (!initialized || phase !== "select") return;
     apiFetch("/crops/api-easy/get")
@@ -107,24 +117,24 @@ export default function Grow() {
       .catch(() => {});
   }, [initialized, phase]);
 
-  // grow 단계 진입 시 작물 상세 fetch
+  // plantedAt이 바뀔 때마다 (다음날 넘기기 포함) 오늘의 케어 일정 재fetch
   useEffect(() => {
     if (phase !== "grow" || !growData) return;
-    apiFetch(`/crops/${growData.cropId}`)
+    const day = getCurrentDay(growData.plantedAt);
+    apiFetch(`/crops/${growData.cropId}/schedule?day=${day}`)
       .then((r) => r.json())
-      .then((d) => setCropDetail(d))
+      .then((d) => setDaySchedule(d.result ?? d))
       .catch(() => {});
-  }, [phase, growData?.cropId]);
+  }, [phase, growData?.cropId, growData?.plantedAt]);
 
   const selectCrop = (crop: ApiCrop) => {
     const data: GrowData = {
       cropId: crop.id,
       cropSlug: crop.slug,
       cropName: crop.name,
-      cropEmoji: "",
-      waterCount: 0,
-      growStage: 0,
-      lastWatered: null,
+      cropTotalDays: crop.days_to_harvest,
+      plantedAt: getTodayStr(),
+      wateredDates: [],
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     setGrowData(data);
@@ -133,6 +143,10 @@ export default function Grow() {
 
   const handleWater = () => {
     if (!growData || isWatering) return;
+    const today = getTodayStr();
+    const wateredTodayCount = growData.wateredDates.filter((d) => d === today).length;
+    if (wateredTodayCount >= (daySchedule?.water_per_day ?? 1)) return;
+
     setIsWatering(true);
 
     if (dropsRef.current) {
@@ -152,40 +166,44 @@ export default function Grow() {
     }
 
     setTimeout(() => {
-      const newCount = growData.waterCount + 1;
-      const newStage = getStage(newCount);
-      const didLevelUp = newStage > growData.growStage;
-
-      if (didLevelUp && plantRef.current) {
-        gsap.fromTo(plantRef.current, { scale: 1 }, { scale: 1.35, duration: 0.25, yoyo: true, repeat: 1, ease: "power2.out" });
-        setLevelUp(true);
-        setTimeout(() => setLevelUp(false), 2200);
-      }
-
-      const updated: GrowData = { ...growData, waterCount: newCount, growStage: newStage, lastWatered: new Date().toISOString() };
+      const updated: GrowData = {
+        ...growData,
+        wateredDates: [...growData.wateredDates, today],
+      };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
       setGrowData(updated);
       setIsWatering(false);
     }, 1100);
   };
 
+  const skipDay = () => {
+    if (!growData) return;
+    const d = new Date(growData.plantedAt + "T00:00:00");
+    d.setDate(d.getDate() - 1);
+    const updated = { ...growData, plantedAt: dateToStr(d), wateredDates: [] };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    setGrowData(updated);
+  };
+
   const resetCrop = () => {
     localStorage.removeItem(STORAGE_KEY);
     setGrowData(null);
     setCrops([]);
+    setDaySchedule(null);
     setPhase("select");
   };
 
-  // ─── 작물 선택 화면 ───────────────────────────────────────────
+  // ─── 작물 선택 ────────────────────────────────────────────────
   if (phase === "select") {
     return (
       <div className="flex flex-col min-h-screen">
-        <Header />
+        <Header onChatClick={() => setChatOpen(true)} />
+        <ChatSidebar open={chatOpen} onClose={() => setChatOpen(false)} onOpen={() => setChatOpen(true)} />
         <main className="flex-1 bg-linear-to-br from-sub1 to-sub2 flex flex-col items-center justify-center py-16 px-4">
           <h1 className="text-3xl font-bold text-white mb-2 flex items-center gap-2">
             <FaSeedling /> 키울 작물을 선택하세요
           </h1>
-          <p className="text-green2 mb-10">한 번 선택하면 수확까지 함께해요!</p>
+          <p className="text-green2 mb-10">오늘부터 함께 키워봐요!</p>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 max-w-3xl w-full">
             {crops.map((crop) => {
               const CropIcon = getCropIcon(crop.slug);
@@ -197,7 +215,9 @@ export default function Grow() {
                 >
                   <CropIcon size={40} className="text-green4" />
                   <span className="font-bold">{crop.name}</span>
-                  <span className="text-xs text-gray-400">{DIFFICULTY_MAP[crop.difficulty]} · {crop.days_to_harvest}일</span>
+                  <span className="text-xs text-gray-400">
+                    {DIFFICULTY_MAP[crop.difficulty]} · {crop.days_to_harvest}일
+                  </span>
                 </button>
               );
             })}
@@ -213,47 +233,43 @@ export default function Grow() {
   // ─── 재배 화면 ────────────────────────────────────────────────
   if (!growData) return null;
 
-  const stage = STAGES[growData.growStage];
-  // 3단계 이상이면 실제 작물 아이콘으로 교체
-  const PlantIcon = growData.growStage >= 3 ? getCropIcon(growData.cropSlug) : stage.Icon;
+  const currentDay = getCurrentDay(growData.plantedAt);
+  const progressPct = Math.min((currentDay / growData.cropTotalDays) * 100, 100);
+  const isHarvestable = currentDay >= growData.cropTotalDays;
+  const PlantIcon = getPlantIcon(progressPct, growData.cropSlug);
+  const plantScale = getPlantScale(progressPct);
   const CropIcon = getCropIcon(growData.cropSlug);
 
-  const nextThreshold = STAGE_THRESHOLDS[Math.min(growData.growStage + 1, STAGE_THRESHOLDS.length - 1)];
-  const prevThreshold = STAGE_THRESHOLDS[growData.growStage];
-  const progressPct = growData.growStage >= 4
-    ? 100
-    : Math.min(((growData.waterCount - prevThreshold) / (nextThreshold - prevThreshold)) * 100, 100);
-
-  const lastWateredText = growData.lastWatered
-    ? new Date(growData.lastWatered).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
-    : "아직 물을 준 적이 없어요";
+  const today = getTodayStr();
+  const wateredTodayCount = growData.wateredDates.filter((d) => d === today).length;
+  const requiredWater = daySchedule?.water_per_day ?? 1;
+  const wateredEnoughToday = wateredTodayCount >= requiredWater;
 
   return (
     <div className="flex flex-col min-h-screen bg-linear-to-b from-sub1 to-sub2">
-      <Header />
+      <Header onChatClick={() => setChatOpen(true)} />
+      <ChatSidebar open={chatOpen} onClose={() => setChatOpen(false)} onOpen={() => setChatOpen(true)} />
 
-      <main className="flex-1 flex flex-col items-center justify-center py-10 px-4 gap-7">
+      <main className="flex-1 flex flex-col items-center py-10 px-4 gap-6">
 
-        {/* 레벨업 토스트 */}
-        {levelUp && (
-          <div className="fixed top-24 left-1/2 -translate-x-1/2 bg-yellow-400 text-yellow-900 font-bold px-6 py-3 rounded-full shadow-lg z-50 animate-bounce flex items-center gap-2">
-            <FaStar /> 성장했어요! {stage.label}
-          </div>
-        )}
-
-        {/* 작물 이름 + 단계 */}
+        {/* 작물명 + 단계 + 날짜 */}
         <div className="text-center flex flex-col items-center gap-1">
-          <p className="text-green2 text-sm tracking-wide">{stage.label}</p>
-          <h2 className="text-2xl font-bold text-white flex items-center gap-2">
+          <span className="bg-white/20 text-green2 text-xs font-semibold px-3 py-1 rounded-full">
+            {daySchedule?.name ?? "성장중"}
+          </span>
+          <h2 className="text-2xl font-bold text-white flex items-center gap-2 mt-2">
             <CropIcon size={22} className="text-green3" />
             {growData.cropName}
           </h2>
+          <p className="text-green2 text-sm flex items-center gap-1 mt-0.5">
+            <FaCalendarAlt size={11} />
+            {growData.plantedAt} 심음 ·{" "}
+            <span className="font-bold text-white">{currentDay}일차</span>
+          </p>
         </div>
 
-        {/* 게임 보드 */}
+        {/* 식물 + 화분 */}
         <div className="relative flex flex-col items-center">
-
-          {/* 물방울 */}
           <div ref={dropsRef} className="absolute -top-10 left-1/2 -translate-x-1/2 pointer-events-none z-10">
             {[...Array(5)].map((_, i) => (
               <span key={i} className="drop absolute opacity-0" style={{ left: `${(i - 2) * 18}px` }}>
@@ -261,15 +277,11 @@ export default function Grow() {
               </span>
             ))}
           </div>
-
-          {/* 식물 + 화분 */}
           <div ref={plantRef} className="flex flex-col items-center">
             <PlantIcon
-              size={stage.scale * 72}
+              size={plantScale * 72}
               className="text-green4 transition-all duration-700"
             />
-
-            {/* 화분 */}
             <div className="flex flex-col items-center mt-2">
               <div className="w-36 h-4 bg-amber-600 rounded-t-lg" />
               <div
@@ -282,13 +294,13 @@ export default function Grow() {
           </div>
         </div>
 
-        {/* 성장 진행도 */}
+        {/* 수확까지 진행도 */}
         <div className="w-72 flex flex-col gap-2">
           <div className="flex justify-between text-xs text-green2">
-            <span className="flex items-center gap-1"><FaTint className="text-blue-300" /> {growData.waterCount}번 줬어요</span>
-            {growData.growStage < 4
-              ? <span>다음까지 {nextThreshold - growData.waterCount}번 남았어요</span>
-              : <span className="flex items-center gap-1"><FaStar className="text-yellow-300" /> 다 컸어요!</span>
+            <span>{currentDay}일 / {growData.cropTotalDays}일</span>
+            {isHarvestable
+              ? <span className="flex items-center gap-1 text-yellow-300 font-bold"><FaStar size={10} /> 수확 가능!</span>
+              : <span>{growData.cropTotalDays - currentDay}일 남았어요</span>
             }
           </div>
           <div className="h-3 bg-white/20 rounded-full overflow-hidden">
@@ -299,27 +311,55 @@ export default function Grow() {
           </div>
         </div>
 
-        {/* 작물 상세 정보 */}
-        {cropDetail && (
-          <div className="w-72 bg-white/10 rounded-2xl px-5 py-4 flex flex-col gap-2 text-sm text-green2">
-            <p>☀️ {cropDetail.sunlight}</p>
-            <p>💧 물 주기: {cropDetail.water_cycle}</p>
-            <p className="text-green3 text-xs">{cropDetail.summary}</p>
+        {/* 오늘의 케어 */}
+        {daySchedule && (
+          <div className="w-72 bg-white/10 rounded-2xl px-5 py-4 flex flex-col gap-3 text-sm">
+            <p className="text-white font-bold">오늘의 할 일</p>
+            <ul className="flex flex-col gap-1.5">
+              {daySchedule.tasks.map((task, i) => (
+                <li key={i} className="text-green2 flex items-start gap-2">
+                  <FaCheckCircle className="text-green3 mt-0.5 shrink-0" size={12} />
+                  {task}
+                </li>
+              ))}
+            </ul>
+            {daySchedule.tip && (
+              <p className="text-green3 text-xs border-t border-white/10 pt-2">
+                💡 {daySchedule.tip}
+              </p>
+            )}
+            <div className="flex items-center gap-1 text-xs text-green2">
+              <FaTint className="text-blue-300" size={11} />
+              오늘 물주기 {wateredTodayCount} / {requiredWater}회
+              {wateredEnoughToday && (
+                <FaCheckCircle className="text-green3 ml-1" size={11} />
+              )}
+            </div>
           </div>
         )}
 
         {/* 물주기 버튼 */}
         <button
           onClick={handleWater}
-          disabled={isWatering}
+          disabled={isWatering || wateredEnoughToday}
           className="bg-blue-400 hover:bg-blue-500 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-lg py-4 px-14 rounded-full shadow-lg transition-all flex items-center gap-2"
         >
-          <FaTint /> {isWatering ? "물 주는 중..." : "물주기"}
+          <FaTint />
+          {isWatering ? "물 주는 중..." : wateredEnoughToday ? "오늘 완료!" : "물주기"}
         </button>
 
-        <p className="text-green3 text-xs">마지막으로 준 시간: {lastWateredText}</p>
+        {/* 다음날로 넘기기 */}
+        <button
+          onClick={skipDay}
+          className="bg-white/20 hover:bg-white/30 text-white text-sm font-semibold py-2.5 px-8 rounded-full transition-all flex items-center gap-2"
+        >
+          <FaForward size={13} /> 다음날로 넘기기
+        </button>
 
-        <button onClick={resetCrop} className="text-green3/60 hover:text-green3 text-xs underline transition-colors">
+        <button
+          onClick={resetCrop}
+          className="text-green3/60 hover:text-green3 text-xs underline transition-colors"
+        >
           다른 작물로 바꾸기
         </button>
       </main>

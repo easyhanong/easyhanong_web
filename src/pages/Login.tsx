@@ -24,7 +24,8 @@ export default function Login() {
       });
 
       if (response.status === 200) {
-        const { access_token, refresh_token } = await response.json();
+        const data = await response.json();
+        const { access_token, refresh_token } = data.result ?? data;
         localStorage.setItem('access_token', access_token);
         localStorage.setItem('refresh_token', refresh_token);
         window.location.href = '/';

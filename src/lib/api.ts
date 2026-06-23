@@ -17,7 +17,8 @@ async function refreshTokens(): Promise<boolean> {
     return false;
   }
 
-  const { access_token, refresh_token: new_refresh_token } = await response.json();
+  const data = await response.json();
+  const { access_token, refresh_token: new_refresh_token } = data.result ?? data;
   localStorage.setItem('access_token', access_token);
   localStorage.setItem('refresh_token', new_refresh_token);
   return true;
