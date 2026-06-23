@@ -1,28 +1,43 @@
 import React, { useCallback, useEffect, useState } from "react";
+import { FaTimes, FaStar, FaCheckCircle, FaLeaf } from "react-icons/fa";
 import {
-  addCoins,
   COINS_UPDATED_EVENT,
   getAttendanceReward,
   getCoins,
+  setCoins,
 } from "../lib/coins";
 import {
   ATTENDANCE_TEST_MODE,
   canCheckToday,
-  getDaysInWeek,
   getToday,
-  getWeekForDay,
   loadAttendanceState,
   saveAttendanceState,
   TOTAL_ATTENDANCE_DAYS,
   type AttendanceState,
 } from "../lib/attendance";
+import { apiFetch } from "../lib/api";
 
-const dayCoinImage = "/day-coin.png";
+type AttendanceRecord = { attended_date: string; streak: number; earned: number };
+type GetAttendanceResponse = { result: { attendances: AttendanceRecord[]; balance: number } };
+type PostAttendanceResponse = { result: { attended_date: string; streak: number; earned: number; balance: number } };
 
-const TOTAL_WEEKS = 5;
+function parseGetAttendance(data: GetAttendanceResponse): { state: AttendanceState; balance: number } {
+  const attendances = data.result.attendances ?? [];
+  const balance = data.result.balance ?? 0;
+  const latest = attendances[0];
+  const today = getToday();
+  const alreadyToday = latest?.attended_date === today;
+  const streakBase = latest?.streak ?? 0;
+  return {
+    state: {
+      currentDay: Math.max(1, alreadyToday ? streakBase : streakBase + 1),
+      lastCheckDate: alreadyToday ? today : (latest?.attended_date ?? null),
+    },
+    balance,
+  };
+}
+
 const TOTAL_DAYS = TOTAL_ATTENDANCE_DAYS;
-
-const WEEKDAY_LABELS = ["월", "화", "수", "목", "금", "토", "일"];
 
 function isDayCompleted(
   day: number,
@@ -45,8 +60,11 @@ export const AttendanceCheckModal: React.FC<AttendanceCheckModalProps> = ({
   onClose,
 }) => {
   const [state, setState] = useState<AttendanceState>(loadAttendanceState);
-  const [viewWeek, setViewWeek] = useState(1);
   const [coinBalance, setCoinBalance] = useState(getCoins);
+  const [justChecked, setJustChecked] = useState(false);
+  const [lastEarned, setLastEarned] = useState(0);
+  const [apiLoading, setApiLoading] = useState(false);
+  const [apiError, setApiError] = useState<string | null>(null);
 
   useEffect(() => {
     const sync = () => setCoinBalance(getCoins());
@@ -56,19 +74,21 @@ export const AttendanceCheckModal: React.FC<AttendanceCheckModalProps> = ({
 
   useEffect(() => {
     if (!open) return;
-    const timeout = window.setTimeout(() => {
-      const loaded = loadAttendanceState();
-      setState(loaded);
-      const active = canCheckToday(loaded.lastCheckDate)
-        ? loaded.currentDay
-        : Math.max(loaded.currentDay - 1, 1);
-      setViewWeek(getWeekForDay(active));
-    }, 0);
-    return () => window.clearTimeout(timeout);
-  }, [open]);
+    setJustChecked(false);
+    setApiError(null);
 
-  useEffect(() => {
-    if (!open) return;
+    // 서버에서 출석 현황 + 잔액 로드
+    apiFetch("/api/attendance/get")
+      .then((r) => r.json())
+      .then((data) => {
+        const { state: parsed, balance } = parseGetAttendance(data as GetAttendanceResponse);
+        setState(parsed);
+        saveAttendanceState(parsed);
+        setCoins(balance);
+        setCoinBalance(balance);
+      })
+      .catch(() => setState(loadAttendanceState()));
+
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
@@ -76,174 +96,256 @@ export const AttendanceCheckModal: React.FC<AttendanceCheckModalProps> = ({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [open, onClose]);
 
-  const handleCheckIn = useCallback(() => {
-    if (!canCheckToday(state.lastCheckDate)) return;
-
-    const next: AttendanceState = ATTENDANCE_TEST_MODE
-      ? {
-          currentDay:
-            state.currentDay >= TOTAL_DAYS ? 1 : state.currentDay + 1,
-          lastCheckDate: null,
-        }
-      : {
-          currentDay: Math.min(state.currentDay + 1, TOTAL_DAYS + 1),
-          lastCheckDate: getToday(),
-        };
-
+  const handleCheckIn = useCallback(async () => {
+    if (!canCheckToday(state.lastCheckDate) || apiLoading) return;
     if (!ATTENDANCE_TEST_MODE && state.currentDay > TOTAL_DAYS) return;
 
-    const reward = getAttendanceReward(state.currentDay);
-    addCoins(reward);
-    setCoinBalance(getCoins());
+    setApiLoading(true);
+    setApiError(null);
 
-    setState(next);
-    saveAttendanceState(next);
-    if (ATTENDANCE_TEST_MODE) {
-      setViewWeek(getWeekForDay(next.currentDay));
+    try {
+      const res = await apiFetch("/api/attendance/post", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+
+      if (res.status === 409) {
+        setApiError("오늘은 이미 출석했어요!");
+        // 서버 기준으로 상태 동기화
+        const next: AttendanceState = { ...state, lastCheckDate: getToday() };
+        setState(next);
+        saveAttendanceState(next);
+        return;
+      }
+
+      if (!res.ok) {
+        setApiError("출석 처리 중 오류가 발생했어요.");
+        return;
+      }
+
+      // 성공 — 서버 응답 기반으로 코인·상태 업데이트
+      const { result } = (await res.json()) as PostAttendanceResponse;
+      setCoins(result.balance);
+      setCoinBalance(result.balance);
+
+      const next: AttendanceState = ATTENDANCE_TEST_MODE
+        ? {
+            currentDay: result.streak >= TOTAL_DAYS ? 1 : result.streak + 1,
+            lastCheckDate: null,
+          }
+        : {
+            currentDay: result.streak,
+            lastCheckDate: getToday(),
+          };
+
+      setState(next);
+      saveAttendanceState(next);
+      setLastEarned(result.earned);
+      setJustChecked(true);
+      setTimeout(() => setJustChecked(false), 1800);
+    } catch {
+      setApiError("네트워크 오류가 발생했어요.");
+    } finally {
+      setApiLoading(false);
     }
-  }, [state]);
+  }, [state, apiLoading]);
 
   if (!open) return null;
 
-  const today = getToday();
   const canCheck = canCheckToday(state.lastCheckDate);
-  const activeDay = canCheck
-    ? Math.min(state.currentDay, TOTAL_DAYS)
-    : null;
-  const weekDays = getDaysInWeek(viewWeek);
+  const todayReward = getAttendanceReward(state.currentDay);
+  const completedCount = canCheck
+    ? Math.max(state.currentDay - 1, 0)
+    : Math.min(state.currentDay, TOTAL_DAYS);
+  const progressPct = Math.min((completedCount / TOTAL_DAYS) * 100, 100);
+  const allDays = Array.from({ length: TOTAL_DAYS }, (_, i) => i + 1);
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="attendance-modal-title"
+      className="fixed inset-0 z-100 flex items-center justify-center p-4"
+      style={{ background: "rgba(3,77,56,0.55)", backdropFilter: "blur(6px)" }}
       onClick={onClose}
     >
       <div
-        className="relative bg-white border border-[#bdbdbd] w-full max-w-[560px] shadow-lg"
+        className="relative w-full max-w-115 rounded-3xl overflow-hidden shadow-2xl"
+        style={{ animation: "chatSlideUp 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275)" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="닫기"
-          className="absolute top-3 right-3 z-10 w-8 h-8 rounded-full bg-[#ff0000] text-white text-lg font-bold flex items-center justify-center leading-none hover:opacity-90 transition-opacity cursor-pointer border-none p-0"
+        {/* ── 헤더 ── */}
+        <div
+          className="px-6 pt-6 pb-5"
+          style={{ background: "linear-gradient(135deg, #034D38 0%, #006C4D 100%)" }}
         >
-          ×
-        </button>
-
-        <header className="pt-8 pb-4 px-6 text-center">
-          <p
-            id="attendance-modal-title"
-            className="text-black text-base font-bold m-0 tracking-tight"
-          >
-            여기에 로고 들어갈거
-          </p>
-          <p className="text-[#2d6a4f] text-sm font-bold mt-2 mb-0">
-            보유 {coinBalance}coin
-          </p>
-        </header>
-
-        <div className="px-6 pb-8">
-          <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center justify-between mb-5">
+            <div className="flex items-center gap-2.5">
+              <img src="/easyhanong.png" alt="" className="w-7 h-7" />
+              <span className="text-white font-bold text-base tracking-tight">출석 체크</span>
+            </div>
             <button
               type="button"
-              disabled={viewWeek <= 1}
-              onClick={() => setViewWeek((w) => Math.max(1, w - 1))}
-              className="text-[#2d6a4f] bg-[#d8f3dc] border-none rounded-lg px-3 py-1.5 text-sm font-bold cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+              onClick={onClose}
+              className="w-8 h-8 rounded-full flex items-center justify-center text-white transition-colors"
+              style={{ background: "rgba(255,255,255,0.15)" }}
+              onMouseOver={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.25)")}
+              onMouseOut={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.15)")}
             >
-              ← 이전 주
-            </button>
-            <span className="text-black text-lg font-extrabold">
-              {viewWeek}주차
-            </span>
-            <button
-              type="button"
-              disabled={viewWeek >= TOTAL_WEEKS}
-              onClick={() => setViewWeek((w) => Math.min(TOTAL_WEEKS, w + 1))}
-              className="text-[#2d6a4f] bg-[#d8f3dc] border-none rounded-lg px-3 py-1.5 text-sm font-bold cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-            >
-              다음 주 →
+              <FaTimes size={13} />
             </button>
           </div>
 
-          <div className="grid grid-cols-7 gap-2 justify-items-center">
-            {weekDays.map((day, index) => {
-              const coins = getAttendanceReward(day);
-              const completed = isDayCompleted(
-                day,
-                state.currentDay,
-                state.lastCheckDate
-              );
-              const isActive = activeDay === day;
-              const isFuture = day > (activeDay ?? state.currentDay);
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-2xl px-4 py-3" style={{ background: "rgba(255,255,255,0.1)" }}>
+              <p className="text-green2 text-[11px] m-0 mb-0.5">보유 코인</p>
+              <p className="text-white font-bold text-xl m-0 leading-tight">{coinBalance}<span className="text-sm font-normal ml-1">coin</span></p>
+            </div>
+            <div className="rounded-2xl px-4 py-3" style={{ background: "rgba(255,255,255,0.1)" }}>
+              <p className="text-green2 text-[11px] m-0 mb-0.5">진행 현황</p>
+              <p className="text-white font-bold text-xl m-0 leading-tight">{completedCount}<span className="text-sm font-normal text-green2 ml-1">/ {TOTAL_DAYS}일</span></p>
+            </div>
+          </div>
+        </div>
+
+        {/* ── 바디 ── */}
+        <div className="bg-white px-6 py-5 flex flex-col gap-4">
+
+          {/* 오늘 출석 카드 */}
+          {canCheck ? (
+            <div
+              className="rounded-2xl p-4 flex items-center gap-4 border-2"
+              style={{ background: "#F4F9F2", borderColor: "#51C99A" }}
+            >
+              <div
+                className="w-13 h-13 rounded-full flex items-center justify-center shrink-0"
+                style={{ background: "linear-gradient(135deg, #00BA84, #51C99A)", width: 52, height: 52 }}
+              >
+                <FaStar size={22} className="text-white" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-sm m-0" style={{ color: "#006C4D" }}>
+                  {state.currentDay}일차 · 오늘 보상 +{todayReward} coin
+                </p>
+                <p className="text-gray-400 text-xs m-0 mt-0.5">지금 바로 출석하세요!</p>
+              </div>
+              <button
+                type="button"
+                onClick={handleCheckIn}
+                disabled={apiLoading}
+                className="shrink-0 text-white font-bold text-sm px-5 py-2.5 rounded-full transition-all hover:scale-105 active:scale-95 shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
+                style={{ background: "linear-gradient(135deg, #00BA84, #51C99A)" }}
+              >
+                {apiLoading ? "처리중..." : "출석!"}
+              </button>
+            </div>
+          ) : (
+            <div className="rounded-2xl p-4 flex items-center gap-4 bg-gray-50">
+              <div className="w-13 h-13 rounded-full bg-gray-100 flex items-center justify-center shrink-0">
+                <FaCheckCircle size={22} className="text-gray-300" />
+              </div>
+              <div>
+                <p className="font-bold text-sm m-0 text-gray-600">오늘 출석 완료!</p>
+                <p className="text-gray-400 text-xs m-0 mt-0.5">내일 다시 만나요 🌱</p>
+              </div>
+            </div>
+          )}
+
+          {/* 진행바 */}
+          <div>
+            <div className="flex justify-between text-xs text-gray-400 mb-1.5">
+              <span>전체 진행률</span>
+              <span className="font-semibold" style={{ color: "#00BA84" }}>{Math.round(progressPct)}%</span>
+            </div>
+            <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
+              <div
+                className="h-full rounded-full transition-all duration-700"
+                style={{
+                  width: `${progressPct}%`,
+                  background: "linear-gradient(90deg, #00BA84, #51C99A)",
+                }}
+              />
+            </div>
+          </div>
+
+          {apiError && (
+            <p className="text-center text-sm text-red-400 font-semibold m-0 -mt-1">{apiError}</p>
+          )}
+
+          {/* 35일 그리드 */}
+          <div className="grid grid-cols-7 gap-1.5">
+            {allDays.map((day) => {
+              const completed = isDayCompleted(day, state.currentDay, state.lastCheckDate);
+              const isBonus = day % 7 === 0;
+              const isToday = day === state.currentDay && canCheck;
+              const isFuture = !completed && !isToday;
 
               return (
                 <button
                   key={day}
                   type="button"
-                  disabled={!isActive}
-                  onClick={isActive ? handleCheckIn : undefined}
+                  disabled={!isToday}
+                  onClick={isToday ? handleCheckIn : undefined}
+                  title={`${day}일차 · +${getAttendanceReward(day)}coin`}
                   className={[
-                    "flex flex-col items-center gap-0.5 w-full border-none bg-transparent p-0",
-                    isActive ? "cursor-pointer" : "cursor-default",
-                    isFuture ? "opacity-35" : completed ? "opacity-80" : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
+                    "aspect-square rounded-xl flex flex-col items-center justify-center text-[11px] font-bold transition-all",
+                    isToday ? "scale-110 shadow-md" : "",
+                    isFuture ? "cursor-default" : "cursor-pointer",
+                  ].join(" ")}
+                  style={{
+                    background: completed
+                      ? isBonus
+                        ? "linear-gradient(135deg, #fbbf24, #f59e0b)"
+                        : "linear-gradient(135deg, #00BA84, #51C99A)"
+                      : isToday
+                        ? "linear-gradient(135deg, #006C4D, #00BA84)"
+                        : "#F4F9F2",
+                    color: completed || isToday ? "#fff" : "#C8D5C4",
+                    boxShadow: isToday ? "0 0 0 2.5px #00BA84, 0 4px 12px rgba(0,186,132,0.3)" : undefined,
+                  }}
                 >
-                  <span className="text-[10px] font-semibold text-[#888] leading-none">
-                    {WEEKDAY_LABELS[index]}
-                  </span>
-                  <span className="text-[13px] font-bold text-black leading-none">
-                    {day}일차
-                  </span>
-                  <img
-                    src={dayCoinImage}
-                    alt={`${day}일차 보상`}
-                    className={[
-                      "w-11 h-11 object-contain select-none",
-                      isActive ? "scale-110" : "",
-                    ]
-                      .filter(Boolean)
-                      .join(" ")}
-                    draggable={false}
-                  />
-                  <span className="text-[11px] font-bold text-black leading-none">
-                    {coins}coin
-                  </span>
+                  {completed
+                    ? isBonus ? <FaStar size={11} /> : <FaLeaf size={10} />
+                    : isToday ? "GO" : day}
                 </button>
               );
             })}
           </div>
 
-          <p className="text-center text-[#888] text-xs mt-4 mb-0">
-            주별 출석 · 총 {TOTAL_WEEKS}주 ({TOTAL_DAYS}일)
-            {ATTENDANCE_TEST_MODE && (
-              <span className="block text-[#e63946] font-bold mt-1">
-                테스트 모드 · 연속 출석 가능
-              </span>
-            )}
-          </p>
+          {/* 범례 */}
+          <div className="flex gap-4 justify-center text-[11px] text-gray-400">
+            <span className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-sm inline-block" style={{ background: "#00BA84" }} />
+              출석 완료
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-sm inline-block" style={{ background: "#f59e0b" }} />
+              보너스 (50coin)
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-sm inline-block border border-gray-200" style={{ background: "#F4F9F2" }} />
+              예정
+            </span>
+          </div>
 
-          {!ATTENDANCE_TEST_MODE && state.lastCheckDate === today && (
-            <p className="text-center text-[#333] text-xs font-semibold mt-4 mb-0">
-              오늘 출석 완료
-            </p>
-          )}
-          {canCheck && activeDay && viewWeek === getWeekForDay(activeDay) && (
-            <p className="text-center text-[#666] text-xs mt-4 mb-0">
-              {activeDay}일차 코인을 눌러 출석하세요
-            </p>
-          )}
-          {canCheck && activeDay && viewWeek !== getWeekForDay(activeDay) && (
-            <p className="text-center text-[#666] text-xs mt-4 mb-0">
-              {getWeekForDay(activeDay)}주차에서 출석할 수 있어요
+          {ATTENDANCE_TEST_MODE && (
+            <p className="text-center text-[11px] text-red-400 font-semibold m-0">
+              ⚠ 테스트 모드 · 연속 출석 가능
             </p>
           )}
         </div>
       </div>
+
+      {/* 출석 완료 토스트 */}
+      {justChecked && (
+        <div
+          className="fixed top-24 left-1/2 -translate-x-1/2 text-white font-bold px-6 py-3 rounded-full shadow-lg z-110 flex items-center gap-2 text-sm"
+          style={{
+            background: "linear-gradient(135deg, #00BA84, #51C99A)",
+            animation: "chatSlideUp 0.3s ease-out",
+          }}
+        >
+          <FaStar /> +{lastEarned} coin 획득!
+        </div>
+      )}
     </div>
   );
 };

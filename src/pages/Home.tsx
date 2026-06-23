@@ -11,6 +11,8 @@ import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
+import { AttendanceCheckModal } from "../components/AttendanceCheckModal";
+import { ChatSidebar } from "../components/ChatSidebar";
 import { apiFetch } from "../lib/api";
 
 gsap.registerPlugin(ScrollTrigger);
@@ -26,16 +28,6 @@ type ApiCrop = {
   water_cycle: string;
 };
 
-type CropDetail = {
-  id: number;
-  slug: string;
-  name: string;
-  difficulty: number;
-  days_to_harvest: number;
-  summary: string;
-  sunlight: string;
-  water_cycle: string;
-};
 
 type Crop = {
   icon: ReactNode;
@@ -131,8 +123,10 @@ const sdgsTags: SdgsTag[] = [
 export default function Home() {
   const [crops, setCrops] = useState<Crop[]>([]);
   const [cropIds, setCropIds] = useState<number[]>([]);
-  const [selectedCrop, setSelectedCrop] = useState<CropDetail | null>(null);
+  const [selectedCrop, setSelectedCrop] = useState<ApiCrop | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [attendanceOpen, setAttendanceOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
   const heroRef     = useRef<HTMLElement>(null);
   const cropsRef    = useRef<HTMLElement>(null);
   const featuresRef = useRef<HTMLElement>(null);
@@ -157,7 +151,7 @@ export default function Home() {
     setSelectedCrop(null);
     apiFetch(`/crops/${id}`)
       .then((r) => r.json())
-      .then((d) => setSelectedCrop(d as CropDetail))
+      .then((d) => setSelectedCrop(d as ApiCrop))
       .catch(() => {})
       .finally(() => setDetailLoading(false));
   };
@@ -241,7 +235,10 @@ export default function Home() {
 
   return (
     <div className="flex flex-col min-h-screen">
-      <Header />
+      <Header
+        onAttendanceClick={() => setAttendanceOpen(true)}
+        onChatClick={() => setChatOpen(true)}
+      />
 
       {/* 작물 상세 모달 */}
       {(detailLoading || selectedCrop) && (
@@ -311,7 +308,7 @@ export default function Home() {
       </div>
 
       {/* 재배 가능 작물 섹션 */}
-      <section ref={cropsRef} className="bg-gray-50 py-20 px-8">
+      <section id="crops" ref={cropsRef} className="bg-gray-50 py-20 px-8">
         <div className="max-w-5xl mx-auto">
           <div className="section-header text-center mb-12">
             <span className="bg-green3 text-white text-sm font-semibold px-4 py-1 rounded-full">재배 가능 작물</span>
@@ -431,11 +428,17 @@ export default function Home() {
           </a>
         </div>
       </section>
+      <Footer />
 
       <AttendanceCheckModal
         open={attendanceOpen}
         onClose={() => setAttendanceOpen(false)}
       />
-    </>
+      <ChatSidebar
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        onOpen={() => setChatOpen(true)}
+      />
+    </div>
   );
 }
